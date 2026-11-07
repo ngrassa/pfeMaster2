@@ -1091,7 +1091,7 @@ Au choix :
   git commit --allow-empty -m "Premier déploiement [deploy]" && git push origin master
   ```
 
-  (`[ci]` : intégration et analyses de sécurité, sans AWS ; sans marqueur : rien ne s'exécute).
+  (`[ci]` : intégration et analyses de sécurité, sans AWS ni DAST ; sans marqueur : rien ne s'exécute).
 
 Déroulement (graphe de l'onglet Actions) :
 

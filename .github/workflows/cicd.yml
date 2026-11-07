@@ -44,7 +44,7 @@
 #   (marqueur cherché dans le TITRE, 1re ligne, des commits poussés)
 #   - push sur master avec « [deploy] » dans un titre de commit : phases 1, 2 et 3
 #     (VM AWS, déploiement sur la base Supabase, analyses de sécurité) ;
-#   - push sur master avec « [ci] » : phases 1 et 3 (aucune ressource AWS) ;
+#   - push sur master avec « [ci] » : phases 1 et 3 sans AWS ni DAST (scan ZAP long) ;
 #   - push SANS marqueur : aucun job exécuté (seul le job 0 lit le message, ≈ 5 s) ;
 #   - bouton « Run workflow » (workflow_dispatch) : phases 1, 2 et 3.
 #   Exemple : git commit -m "Correction du panier [deploy]" && git push
@@ -655,7 +655,8 @@ jobs:
   dast-staging:
     name: "3.5 DAST préproduction (OWASP ZAP, scan actif)"
     needs: [trigger, build, gate, smoke]
-    if: ${{ !cancelled() && needs.trigger.outputs.run == 'true' && needs.build.result == 'success' }}
+    # Ignoré en mode [ci] (scan long) : exécuté seulement avec [deploy] ou Run workflow
+    if: ${{ !cancelled() && needs.trigger.outputs.deploy == 'true' && needs.build.result == 'success' }}
     runs-on: ubuntu-24.04
     # Non bloquant : un échec ou un dépassement de délai du scan ZAP est signalé
     # (onglet Actions, rapport en artefact) sans faire échouer le pipeline.
