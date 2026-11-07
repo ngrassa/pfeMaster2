@@ -343,11 +343,19 @@ jobs:
         run: |
           export PGHOST="$DB_HOST" PGPORT="${DB_PORT:-5432}" PGDATABASE="$DB_NAME" PGUSER="$DB_USER" PGPASSWORD="$DB_PASSWORD"
           psql -X -v ON_ERROR_STOP=1 -c 'SELECT version()' -At
+          # Projet Supabase neuf (fork) : tables créées par les migrations au déploiement (2.3)
+          if [ "$(psql -XAt -c "SELECT to_regclass('public.users') IS NOT NULL")" != t ]; then
+            echo "::notice::Base Supabase vide : le schéma sera créé par les migrations au déploiement (deploy.sh), le compte administrateur par les secrets ADMIN_EMAIL/ADMIN_PASSWORD."
+            printf '## 1.2b Base Supabase\nBase vide : schéma créé au déploiement.\n' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           counts=$(psql -X -v ON_ERROR_STOP=1 -c 'SELECT (SELECT count(*) FROM users) utilisateurs, (SELECT count(*) FROM "Marques") marques,
             (SELECT count(*) FROM "Pneus") pneus, (SELECT count(*) FROM commandes) commandes,
             (SELECT count(*) FROM factures) factures, (SELECT count(*) FROM avis) avis')
           echo "$counts"
-          test "$(psql -XAt -c 'SELECT count(*) FROM users WHERE role = $$admin$$')" -ge 1
+          if [ "$(psql -XAt -c 'SELECT count(*) FROM users WHERE role = $$admin$$')" -lt 1 ]; then
+            echo "::warning::Aucun administrateur : définir les secrets ADMIN_EMAIL et ADMIN_PASSWORD (créé au déploiement)."
+          fi
           {
             echo "## 1.2b Base Supabase"
             echo '```'

@@ -30,6 +30,7 @@ Application web responsive réalisée dans le cadre du projet de fin d'études (
 - [18. Préparer la livraison finale](#18-préparer-la-livraison-finale)
 - [19. Limites et améliorations](#19-limites-et-améliorations)
 - [20. Déploiement en production (AWS EC2 Ubuntu)](#20-déploiement-en-production-aws-ec2-ubuntu)
+- [21. Forker le dépôt et redéployer le pipeline CI/CD](#21-forker-le-dépôt-et-redéployer-le-pipeline-cicd)
 
 ## 0. Modifications apportées au projet initial
 
@@ -980,6 +981,162 @@ La base de production du 30 octobre 2026 est sauvegardée **chiffrée** (GPG AES
 ### Portabilité
 
 Seul `infra/aws/` est spécifique à AWS. `scripts/`, `systemd/` et `nginx/` fonctionnent sur toute VM Ubuntu 22.04/24.04 ; la base peut être remplacée par un PostgreSQL managé (`DB_HOST`, `DB_SSL=true`, `install.sh --external-db`). Limite : les images sont stockées sur le disque local, ce qui impose une seule instance applicative.
+
+## 21. Forker le dépôt et redéployer le pipeline CI/CD
+
+Procédure pour qu'un **fork** de ce dépôt déploie le site sur **son propre** compte AWS
+avec **sa propre** base Supabase, sans aucune sauvegarde à restaurer. Comptez environ
+30 minutes la première fois, dont environ 20 minutes d'exécution du pipeline.
+
+Ce qui sera créé automatiquement : bucket S3 de l'état Terraform, Security Group, IP
+élastique, VM EC2 Ubuntu 24.04, HTTPS Let's Encrypt (`https://landolsi-tires-<ip>.sslip.io`),
+schéma de la base (migrations), compte administrateur, supervision CloudWatch.
+
+### Étape 1 — Forker le dépôt
+
+1. Sur GitHub : **Fork**. **Décochez** « Copy the `develop-landolsi` branch only » :
+   le pipeline se déclenche sur la branche **`master`**.
+2. Le fork doit rester **public** : la VM clone le code depuis l'URL du fork, sans jeton.
+3. Onglet **Actions** du fork : cliquer **« I understand my workflows, go ahead and enable them »**
+   (GitHub désactive les workflows des forks par défaut).
+
+### Étape 2 — Créer la base Supabase
+
+1. [supabase.com](https://supabase.com) > **New project** (région proche, par ex. *Central EU*).
+   Notez le **mot de passe de la base** choisi à la création.
+2. **Project Settings > Database > Connection string > Session pooler** (port **5432**).
+   Relevez :
+
+   | Champ Supabase | Exemple | Secret GitHub |
+   |---|---|---|
+   | Host | `aws-0-eu-central-2.pooler.supabase.com` | `SUPABASE_DB_HOST` |
+   | Port | `5432` | `SUPABASE_DB_PORT` |
+   | Database | `postgres` | `SUPABASE_DB_NAME` |
+   | User | `postgres.<project-ref>` | `SUPABASE_DB_USER` |
+   | Password | (celui de l'étape 1) | `SUPABASE_DB_PASSWORD` |
+
+   > Utilisez bien le **session pooler** : l'hôte direct `db.<ref>.supabase.co` n'a
+   > qu'une adresse **IPv6**, injoignable depuis les runners GitHub et la VM EC2.
+   > Le pooler de *transaction* (port 6543) ne convient pas aux migrations.
+
+3. Rien d'autre à faire dans Supabase : la base peut rester **vide**. Les tables sont
+   créées par les migrations au premier déploiement, l'administrateur par les secrets
+   `ADMIN_EMAIL` / `ADMIN_PASSWORD`. Le certificat racine Supabase
+   (`backend/certs/prod-ca-2021.crt`) est commun à tous les projets : déjà dans le dépôt.
+
+### Étape 3 — Préparer AWS (AWS Academy Learner Lab)
+
+1. **Start Lab**, attendre le voyant vert, puis **AWS Details > AWS CLI > Show** :
+   copier `aws_access_key_id`, `aws_secret_access_key`, `aws_session_token`.
+   La session expire au bout d'environ **4 h** : à recopier avant chaque nouveau déploiement.
+2. Créer une clé SSH réservée au pipeline (sans phrase secrète) :
+
+   ```bash
+   ssh-keygen -t ed25519 -N "" -C "landolsi-ci" -f ~/.ssh/landolsi_ci
+   ```
+
+   La clé **privée** va dans le secret `SSH_PRIVATE_KEY` ; la clé publique est injectée
+   dans la VM par Terraform. Le port SSH reste fermé : le pipeline ne l'ouvre que pour
+   l'IP du runner, le temps d'un job.
+
+Compte AWS classique (hors Academy) : mêmes secrets, sans `AWS_SESSION_TOKEN` (laisser
+vide), avec le droit de créer EC2, S3, SNS, CloudWatch. Créer aussi une paire de clés
+EC2 nommée `vockey` (nom attendu par Terraform), ou adapter `key_name` dans
+`.github/workflows/cicd.yml`.
+
+### Étape 4 — Déclarer les secrets du fork
+
+**Settings > Secrets and variables > Actions > New repository secret**, ou en ligne de
+commande (remplacer `<vous>/<fork>`) :
+
+```bash
+R=<vous>/<fork>
+gh secret set AWS_ACCESS_KEY_ID     --repo $R      # coller la valeur demandée
+gh secret set AWS_SECRET_ACCESS_KEY --repo $R
+gh secret set AWS_SESSION_TOKEN     --repo $R
+gh secret set SSH_PRIVATE_KEY       --repo $R < ~/.ssh/landolsi_ci
+gh secret set SUPABASE_DB_HOST      --repo $R --body "aws-0-<region>.pooler.supabase.com"
+gh secret set SUPABASE_DB_PORT      --repo $R --body "5432"
+gh secret set SUPABASE_DB_NAME      --repo $R --body "postgres"
+gh secret set SUPABASE_DB_USER      --repo $R --body "postgres.<project-ref>"
+gh secret set SUPABASE_DB_PASSWORD  --repo $R      # saisi au clavier : jamais dans l'historique du shell
+gh secret set ADMIN_EMAIL           --repo $R --body "admin@exemple.com"
+gh secret set ADMIN_PASSWORD        --repo $R
+```
+
+| Secret | Obligatoire | Rôle |
+|---|---|---|
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | oui | identifiants AWS (à renouveler à chaque session Academy) |
+| `SSH_PRIVATE_KEY` | oui | clé privée Ed25519 ou RSA du pipeline (sans phrase secrète) |
+| `SUPABASE_DB_HOST`, `_PORT`, `_NAME`, `_USER`, `_PASSWORD` | oui | connexion à la base Supabase (session pooler) |
+| `ADMIN_EMAIL`, `ADMIN_PASSWORD` | oui sur une base vide | compte administrateur créé s'il n'en existe aucun |
+| `MISTRAL_API_KEY` | non | assistants IA (sinon : HTTP 503, le reste du site fonctionne) |
+| `EMAIL_USER`, `EMAIL_PASS` | non | Gmail + mot de passe d'application : factures, mot de passe oublié, notification |
+| `NOTIFICATION_EMAILS` | non | destinataires de l'e-mail « pipeline réussi » (séparés par des virgules) |
+| `DB_BACKUP_PASSPHRASE` | non | chiffrement des images archivées par Destroy (sinon clé dérivée de `SSH_PRIVATE_KEY`) |
+
+Variables facultatives (**Variables** à côté de *Secrets*) : `AWS_REGION` (défaut `us-east-1`),
+`INSTANCE_TYPE` (défaut `t3.small`), `ENABLE_HTTPS` (défaut `true`), `LETSENCRYPT_EMAIL`,
+`MISTRAL_MODEL`, `ADMIN_SSH_CIDR` (votre IP en `/32` pour SSH), `ADMIN_SSH_PUBLIC_KEY`,
+`EIP_ALLOCATION_ID` (voir l'étape 6), `NOTIFICATION_EMAILS`, `LOG_RETENTION_DAYS`.
+
+### Étape 5 — Lancer le pipeline
+
+Au choix :
+
+- **Actions > « CI/CD — LANDOLSI TIRES » > Run workflow**, branche `master` ;
+- ou un commit poussé sur `master` dont le **titre** contient `[deploy]` :
+
+  ```bash
+  git commit --allow-empty -m "Premier déploiement [deploy]" && git push origin master
+  ```
+
+  (`[ci]` : intégration et analyses de sécurité, sans AWS ; sans marqueur : rien ne s'exécute).
+
+Déroulement (graphe de l'onglet Actions) :
+
+| Phase | Jobs | Durée |
+|---|---|---|
+| 1 — CI | lint, tests (base PostgreSQL **jetable**), contrôle Supabase (lecture seule), build, Gitleaks, porte CI | ~2 min |
+| 2 — AWS | prérequis, Terraform (VM), déploiement (Supabase, migrations, HTTPS), tests de fumée, CloudWatch | ~10–15 min |
+| 3 — Sécurité | CodeQL, Semgrep, npm audit/Trivy, Checkov, DAST OWASP ZAP | ~5–15 min |
+| 4 | rapport final, e-mail de réussite | <1 min |
+
+À la fin, l'**URL du site** figure dans le résumé du job « 2.3 Déploiement » et du
+« 3.6 Rapport final », sous la forme `https://landolsi-tires-<ip-avec-tirets>.sslip.io/`.
+Connexion administrateur : `ADMIN_EMAIL` / `ADMIN_PASSWORD`.
+
+### Étape 6 — Garder la même URL
+
+Au premier déploiement, une IP élastique est réservée et un avis
+`Nouvelle IP élastique réservée : eipalloc-…` s'affiche. Enregistrez cette valeur dans
+la variable **`EIP_ALLOCATION_ID`** : après un Destroy puis un nouveau déploiement, le
+site revient à la **même URL** (et au même certificat HTTPS). Sans elle, le pipeline
+retrouve l'IP par son tag `landolsi-tires-eip` tant qu'elle n'est pas libérée.
+
+### Étape 7 — Supprimer la VM
+
+**Actions > « Destroy — infrastructure AWS » > Run workflow**, saisir `DESTROY`.
+La VM est supprimée ; les images téléversées sont archivées (chiffrées) dans S3 et
+réinjectées au prochain déploiement. **La base Supabase n'est jamais touchée** : les
+données sont intactes au redéploiement. Options : supprimer le volume racine, libérer
+l'IP élastique (l'URL changera).
+
+### Problèmes fréquents lors d'un fork
+
+| Symptôme | Cause et solution |
+|---|---|
+| Aucun job ne démarre après un push | Workflows non activés (étape 1.3), push sur une autre branche que `master`, ou titre de commit sans `[deploy]` / `[ci]` |
+| `secret SUPABASE_DB_HOST absent` | Secrets non déclarés **dans le fork** (les secrets ne sont jamais copiés par un fork) |
+| `Identifiants AWS invalides ou expirés` | Session AWS Academy terminée : relancer le lab et recopier les 3 secrets `AWS_*` |
+| `Network is unreachable` vers Supabase | Hôte direct `db.<ref>.supabase.co` (IPv6) : utiliser le **session pooler** |
+| `password authentication failed` | Utilisateur sans le suffixe `.<project-ref>` ou mot de passe erroné (*Database > Reset password*) |
+| Exécution « Queued » longtemps | Une exécution précédente occupe encore `master` (groupe de concurrence) : attendre ou l'annuler |
+| `HTTPS impossible` (avertissement) | Limite Let's Encrypt (5 certificats/semaine pour un même nom) : le site reste servi en HTTP |
+| Le plan Terraform veut remplacer la VM | Garde-fou : le pipeline s'arrête. Utiliser Destroy si c'est voulu |
+
+Documentation détaillée du pipeline : [`docs/deployment/cicd-pipeline.md`](docs/deployment/cicd-pipeline.md).
+
 
 ---
 
