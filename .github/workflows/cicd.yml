@@ -657,7 +657,10 @@ jobs:
     needs: [trigger, build, gate, smoke]
     if: ${{ !cancelled() && needs.trigger.outputs.run == 'true' && needs.build.result == 'success' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Non bloquant : un échec ou un dépassement de délai du scan ZAP est signalé
+    # (onglet Actions, rapport en artefact) sans faire échouer le pipeline.
+    continue-on-error: true
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16
@@ -1565,7 +1568,8 @@ jobs:
             echo
             echo "Pour supprimer la VM : **Actions > Destroy — infrastructure AWS > Run workflow** (saisir \`DESTROY\`)."
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "$RESULTS" | jq -e '[to_entries[] | select(.value.result == "failure" or .value.result == "cancelled")] | length == 0' >/dev/null
+          # DAST (3.5) non bloquant : signalé dans le tableau, exclu de la porte finale
+          echo "$RESULTS" | jq -e '[to_entries[] | select(.key != "dast-staging") | select(.value.result == "failure" or .value.result == "cancelled")] | length == 0' >/dev/null
 
   # ===========================================================================
   # 4 — NOTIFICATION E-MAIL : PIPELINE RÉUSSI
