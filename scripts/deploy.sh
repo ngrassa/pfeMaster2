@@ -61,7 +61,14 @@ if git -C "$SOURCE" rev-parse --short HEAD >/dev/null 2>&1; then
 fi
 RELEASE_ID="$(date -u '+%Y%m%d%H%M%S')-${rev}"
 RELEASE="$APP_ROOT/releases/$RELEASE_ID"
-PREVIOUS="$(readlink -f "$APP_ROOT/current" 2>/dev/null || true)"
+# Version précédente : seulement si « current » est un lien existant. Sur une VM
+# neuve, readlink -f renvoie le chemin même du lien absent ; un rollback ferait
+# alors pointer « current » sur lui-même (boucle de liens, API qui ne démarre plus).
+PREVIOUS=""
+if [[ -L "$APP_ROOT/current" ]]; then
+    PREVIOUS="$(readlink -f "$APP_ROOT/current" 2>/dev/null || true)"
+    [[ "$PREVIOUS" == "$APP_ROOT"/releases/* && -d "$PREVIOUS" ]] || PREVIOUS=""
+fi
 
 log "Version : $RELEASE_ID"
 [[ -n "$PREVIOUS" ]] && log "Version active : $(basename "$PREVIOUS")"
@@ -142,10 +149,11 @@ mv -Tf "$APP_ROOT/current.tmp" "$APP_ROOT/current"
 log "Version activée : $RELEASE_ID"
 
 rollback_to_previous() {
-    if [[ -n "$PREVIOUS" && -d "$PREVIOUS" ]]; then
+    if [[ -n "$PREVIOUS" && -d "$PREVIOUS" && "$PREVIOUS" != "$RELEASE" ]]; then
         warn "retour à la version précédente $(basename "$PREVIOUS")"
         ln -sfn "$PREVIOUS" "$APP_ROOT/current.tmp"
         mv -Tf "$APP_ROOT/current.tmp" "$APP_ROOT/current"
+        systemctl reset-failed "$SERVICE_NAME" 2>/dev/null || true
         systemctl restart "$SERVICE_NAME" || true
         systemctl reload nginx || true
         warn "les migrations déjà appliquées ne sont pas annulées; voir docs/deployment/rollback.md"
@@ -155,6 +163,9 @@ rollback_to_previous() {
 if (( RESTART )); then
     require_cmd systemctl curl
     log "Redémarrage de $SERVICE_NAME..."
+    # Compteur d'échecs remis à zéro : un déploiement raté juste avant ne doit pas
+    # bloquer celui-ci (« Start request repeated too quickly »)
+    systemctl reset-failed "$SERVICE_NAME" 2>/dev/null || true
     systemctl restart "$SERVICE_NAME"
     systemctl reload nginx
 
