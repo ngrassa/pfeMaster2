@@ -1,0 +1,4 @@
+# Faux positif Gitleaks (generic-api-key) : empreinte SHA-256 publique d'un ancien
+# secret de développement, pas un secret. Retirée au commit suivant ; ignorée ici
+# car Gitleaks analyse tout l'historique Git.
+9c29b7cf59f6dbd509324629d701066df39446c6:backend/config/index.js:generic-api-key:38
