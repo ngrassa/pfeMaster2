@@ -1,13 +1,14 @@
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 
-const dossier = path.join(__dirname, "../uploads/excel");
-
-// Créer le dossier s'il n'existe pas
-if (!fs.existsSync(dossier)) {
-    fs.mkdirSync(dossier, { recursive: true });
-}
+// Fichier d'import temporaire (supprimé après lecture par PneuController) :
+// dossier temporaire du système. En production, le code (/opt/landolsi) est en
+// lecture seule pour le service (systemd ProtectSystem=strict) ; /tmp est privé
+// au service (PrivateTmp=yes) et accessible en écriture.
+const dossier = path.join(os.tmpdir(), "landolsi-excel");
+fs.mkdirSync(dossier, { recursive: true, mode: 0o700 });
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
