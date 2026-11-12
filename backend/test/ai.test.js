@@ -13,7 +13,7 @@ const createAiRouter = require("../routes/aiRoutes");
 const { createAiController } = require("../controllers/AiController");
 const { createMistralClient, AiServiceError } = require("../services/ai/mistralClient");
 const { runAgent, validateArgs } = require("../services/ai/agent");
-const { parseDimension } = require("../services/ai/tireTools");
+const { parseDimension, isDimensionConsistent } = require("../services/ai/tireTools");
 const { resolvePeriod, summarize, buildAnalyticsTools } = require("../services/ai/analyticsTools");
 const { buildSupportTools, searchDocs, loadDocs } = require("../services/ai/supportTools");
 
@@ -42,7 +42,8 @@ function makeRepo({ items = [], orders = [] } = {}) {
         async searchTires(f) {
             this.calls.push(["searchTires", f]);
             return TIRES.filter((t) => (!f.largeur || t.largeur === f.largeur) && (!f.hauteur || t.hauteur === f.hauteur) &&
-                (!f.diametre || t.diametre === f.diametre) && (!f.marque || t.marque.toLowerCase() === f.marque.toLowerCase()));
+                (!f.diametre || t.diametre === f.diametre) && (!f.marque || t.marque.toLowerCase().includes(f.marque.toLowerCase())) &&
+                (!f.modele || t.modele.toLowerCase().includes(f.modele.toLowerCase())));
         },
         async getTiresByIds(ids) { return TIRES.filter((t) => ids.includes(t.id)); },
         async findVehicleByPlate(p) {
@@ -179,6 +180,15 @@ describe("socle IA", () => {
         assert.deepStrictEqual(parseDimension("205/55 R16"), { largeur: 205, hauteur: 55, diametre: 16 });
         assert.deepStrictEqual(parseDimension("pneu 195/65R15 91H"), { largeur: 195, hauteur: 65, diametre: 15 });
         assert.strictEqual(parseDimension("je ne sais pas"), null);
+        for (const txt of ["205/55/16", "205/55/R16", "205 55 16", "205/55-16", "205/55ZR16", "205/55 R 16 91V"]) {
+            assert.deepStrictEqual(parseDimension(txt), { largeur: 205, hauteur: 55, diametre: 16 }, txt);
+        }
+    });
+
+    test("fiche sans colonnes largeur/hauteur/diamètre : cohérente (étiquette seule)", () => {
+        assert.ok(isDimensionConsistent({ dimension: "205/55 R16", largeur: null, hauteur: null, diametre: null }));
+        assert.ok(isDimensionConsistent({ dimension: "205/55R16", largeur: "205.0", hauteur: "55.0", diametre: "16.0" }));
+        assert.ok(!isDimensionConsistent({ dimension: "205/55 R16", largeur: 195, hauteur: null, diametre: null }));
     });
 });
 
@@ -213,6 +223,20 @@ describe("conseiller pneus", () => {
         assert.strictEqual(sailun.stock, 20);
         assert.strictEqual(sailun.url, "/pneu/2");
         assert.strictEqual(sailun.compatibilite, "dimension_identique");
+    });
+
+    test("pneu précis demandé par marque et modèle : trouvé avec son stock réel", async () => {
+        const { res, body } = await run([
+            toolCall("search_tires", { marque: "michelin", modele: "primacy" }),
+            (m) => {
+                const r = lastToolResult(m);
+                assert.deepStrictEqual(r.pneus.map((p) => p.id), [1]);
+                assert.strictEqual(r.pneus[0].disponibilite, "En stock (8)");
+                return answer("Oui : [#1] est disponible.");
+            }
+        ]);
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(body.products.map((p) => [p.id, p.stock]), [[1, 8]]);
     });
 
     test("demande sans dimension : l'assistant pose une question, aucun produit", async () => {
