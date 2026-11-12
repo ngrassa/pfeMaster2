@@ -602,6 +602,7 @@ Sans clé (ou avec les valeurs d'exemple `replace_with_...` de `.env.example`), 
 ### Règles métier et garde-fous
 
 - **Produits** : le modèle cite les pneus sous la forme `[#ID]` ; seules les références renvoyées par un outil pendant la requête deviennent des fiches (prix, promotion, stock réels). Un identifiant inventé est retiré et un avertissement s'affiche.
+- **Recherche catalogue** : seuls les pneus actifs (`isActive`) sont proposés. La dimension est recherchée dans les colonnes `largeur`/`hauteur`/`diametre` **ou**, si elles sont vides (elles sont facultatives à la saisie), dans l'étiquette `dimension` (formats `205/55 R16`, `205/55R16`, `205/55/16`, `205 55 16`…). Marque et modèle sont recherchés en « contient », sans tenir compte de la casse (`search_tires` accepte `marque` et `modele`).
 - **Compatibilité** : « Compatible » uniquement si l'immatriculation existe en base avec des pneus associés (`vehicule_pneus`). Sinon : « même dimension, à vérifier » ou « non vérifiée ».
 - **Chiffre d'affaires** : prix payé × quantité des commandes `confirmée`, `en préparation`, `expédiée`, `livrée`. Les commandes `en attente` sont comptées à part (CA potentiel), les `annulée` sont exclues. Les remboursements ne sont pas enregistrés par le site. Panier moyen = CA / commandes validées.
 - **Marges / conversions** : non calculées (aucun coût d'achat ni suivi des consultations). L'assistant l'explique.

@@ -2,7 +2,9 @@
 // Fonctionnalité 1 — Conseiller IA pour le choix des pneus
 // =====================================================
 
-const DIMENSION_RE = /(\d{3})\s*\/\s*(\d{2})\s*(?:Z?R|-)?\s*(\d{2})/i;
+// Formats acceptés : 205/55 R16, 205/55R16, 205/55ZR16, 205/55/16,
+// 205/55/R16, 205/55-16, 205 55 16, 205/55 R 16 (suivis ou non des indices)
+const DIMENSION_RE = /(\d{3})\s*[\/\s-]\s*(\d{2})\s*[\/-]?\s*(?:Z?R)?\s*(\d{2})/i;
 
 function parseDimension(text) {
     const m = DIMENSION_RE.exec(String(text || ""));
@@ -12,11 +14,13 @@ function parseDimension(text) {
 
 const productUrl = (id) => `/pneu/${id}`;
 
-// L'étiquette « dimension » et les colonnes numériques doivent concorder
+// L'étiquette « dimension » et les colonnes numériques doivent concorder.
+// Une colonne vide (facultative en base) ne contredit pas l'étiquette.
 function isDimensionConsistent(t) {
     const d = parseDimension(t.dimension);
     if (!d) return false;
-    return d.largeur === Number(t.largeur) && d.hauteur === Number(t.hauteur) && d.diametre === Number(t.diametre);
+    return ["largeur", "hauteur", "diametre"].every((k) =>
+        t[k] === null || t[k] === undefined || t[k] === "" || d[k] === Number(t[k]));
 }
 
 // Vue d'un pneu transmise au LLM : uniquement des données vérifiées
@@ -51,12 +55,13 @@ function buildTireTools(repo) {
         },
         {
             name: "search_tires",
-            description: "Recherche des pneus dans le catalogue réel. Renseigner la dimension (ex. 205/55 R16) dès qu'elle est connue. Le prix est unitaire en dinars (DT).",
+            description: "Recherche des pneus dans le catalogue réel. Renseigner la dimension (ex. 205/55 R16) dès qu'elle est connue, et la marque et/ou le modèle quand le client cite un pneu précis (ex. marque « Michelin », modele « Primacy 4 »). Le prix est unitaire en dinars (DT).",
             parameters: {
                 type: "object",
                 properties: {
                     dimension: { type: "string", maxLength: 30, description: "Dimension ex. 205/55 R16" },
-                    marque: { type: "string", maxLength: 60 },
+                    marque: { type: "string", maxLength: 60, description: "Nom de marque seul, ex. Michelin" },
+                    modele: { type: "string", maxLength: 60, description: "Nom du modèle/gamme, ex. Primacy 4 (recherche partielle)" },
                     saison: { type: "string", maxLength: 30, description: "Saison telle que listée par list_catalog_options" },
                     budget_max_unitaire: { type: "number", minimum: 1, maximum: 100000 },
                     en_stock_uniquement: { type: "boolean" }
@@ -73,6 +78,7 @@ function buildTireTools(repo) {
                 const found = await repo.searchTires({
                     ...(dim || {}),
                     marque: args.marque,
+                    modele: args.modele,
                     saison: args.saison,
                     limit: 40
                 });
@@ -104,7 +110,7 @@ function buildTireTools(repo) {
                         const moinsCher = Math.min(...found.filter(isDimensionConsistent).map(prixEffectif));
                         result.note = `Aucun pneu dans ce budget. Le moins cher correspondant aux autres critères coûte ${moinsCher} DT.`;
                     } else {
-                        result.note = "Aucun pneu du catalogue ne correspond à ces critères.";
+                        result.note = "Aucun pneu du catalogue ne correspond à ces critères. Avant de conclure, relancer search_tires avec moins de critères (par ex. sans le modèle, ou la marque seule, ou la dimension seule).";
                     }
                 }
                 return result;
@@ -198,6 +204,8 @@ MÉTHODE
 - Si la dimension (ex. 205/55 R16) ou l'immatriculation manque, pose UNE question ciblée (où la lire : flanc du pneu ou carte grise). Ne fais pas remplir un questionnaire si les informations sont déjà données.
 - Demande budget, usage (ville, autoroute, longs trajets) et priorité (prix, confort, longévité, adhérence) seulement si utile.
 - Utilise TOUJOURS les outils pour obtenir pneus, prix et stocks. N'invente jamais un produit, un prix, un stock, une note, un essai ni une performance.
+- Si le client cite un pneu précis (marque, modèle et/ou dimension), appelle search_tires avec ces critères séparés (marque = nom de marque seul, modele = gamme). Sans résultat, relance avec moins de critères avant de répondre.
+- La disponibilité se lit UNIQUEMENT dans le champ « disponibilite »/« stock » d'un pneu renvoyé par un outil. Ne dis jamais qu'un pneu est indisponible ou en rupture sans l'avoir vu ainsi dans un résultat ; si la recherche ne l'a pas trouvé, dis que tu ne l'as pas trouvé sous ce nom et propose les pneus proches renvoyés.
 - Si les données le permettent, propose jusqu'à trois profils : Économique, Meilleur compromis, Premium. S'il n'y a qu'un ou deux produits pertinents, dis-le simplement.
 - Cite chaque produit recommandé avec son identifiant au format [#ID] (ex. [#12]) : le site affichera sa fiche. Ne cite que des identifiants renvoyés par les outils.
 - Pour chaque produit : marque, modèle, dimension, prix réel (et prix promo s'il existe), disponibilité, justification courte basée sur les données. Si une caractéristique manque, écris « non renseigné ».

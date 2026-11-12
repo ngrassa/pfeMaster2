@@ -6,6 +6,7 @@
 // interface, ce qui permet de la simuler dans les tests.
 
 const { Op } = require("sequelize");
+const { parseDimension } = require("./tireTools");
 const {
     Pneu, Marque, Vehicule, Promotion, Commande, CommandeItem
 } = require("../../models/associations");
@@ -39,16 +40,27 @@ async function activePromotions(pneuIds) {
     return map;
 }
 
+// Colonnes DECIMAL renvoyées en chaîne par pg ("205.0") : conversion en nombre.
+// Colonne vide (facultative à la création d'un pneu) : valeur lue dans
+// l'étiquette « dimension ». Une colonne renseignée n'est jamais écrasée,
+// ce qui permet toujours de détecter une fiche incohérente.
+function num(v) {
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+}
+
 function toTire(row, promo) {
     const prix = Number(row.prix);
+    const lue = parseDimension(row.dimension) || {};
     return {
         id: row.id,
         marque: row.marque ? row.marque.nom : null,
         modele: row.modele,
         dimension: row.dimension,
-        largeur: row.largeur,
-        hauteur: row.hauteur,
-        diametre: row.diametre,
+        largeur: num(row.largeur) ?? lue.largeur ?? null,
+        hauteur: num(row.hauteur) ?? lue.hauteur ?? null,
+        diametre: num(row.diametre) ?? lue.diametre ?? null,
         saison: row.saison,
         prix,
         prixPromo: promo ? Number((prix * (1 - promo.pourcentage / 100)).toFixed(2)) : null,
@@ -59,6 +71,15 @@ function toTire(row, promo) {
     };
 }
 
+// Recherche « contient » insensible à la casse ; % et _ saisis sont neutralisés
+function contains(text) {
+    return `%${String(text).replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+}
+
+function words(text) {
+    return String(text || "").split(/[\s\-_/]+/).map((w) => w.trim()).filter(Boolean).slice(0, 5);
+}
+
 async function withPromos(rows) {
     const promos = await activePromotions(rows.map((r) => r.id));
     return rows.map((r) => toTire(r, promos.get(r.id)));
@@ -66,32 +87,42 @@ async function withPromos(rows) {
 
 const repository = {
 
-    async searchTires({ largeur, hauteur, diametre, marque, saison, prixMax, prixMin, ids, limit = 20 }) {
-        const where = {};
-        if (largeur) where.largeur = largeur;
-        if (hauteur) where.hauteur = hauteur;
-        if (diametre) where.diametre = diametre;
-        if (saison) where.saison = { [Op.iLike]: saison };
-        if (prixMax || prixMin) {
-            where.prix = {};
-            if (prixMax) where.prix[Op.lte] = prixMax;
-            if (prixMin) where.prix[Op.gte] = prixMin;
+    async searchTires({ largeur, hauteur, diametre, marque, modele, saison, prixMax, prixMin, ids, limit = 20 }) {
+        // Seuls les pneus actifs sont vendus (même règle que le catalogue public)
+        const and = [{ isActive: true }];
+
+        // Dimension : colonnes numériques OU étiquette texte. Les colonnes
+        // largeur/hauteur/diamètre sont facultatives : un pneu saisi avec la
+        // seule étiquette « 205/55 R16 » doit être trouvé. Le contrôle exact
+        // est refait après la requête (matchesDimension).
+        const dim = { largeur, hauteur, diametre };
+        const dimKeys = Object.keys(dim).filter((k) => dim[k]);
+        if (dimKeys.length) {
+            const byColumns = Object.fromEntries(dimKeys.map((k) => [k, dim[k]]));
+            const pattern = `%${[largeur, hauteur, diametre].filter(Boolean).join("%")}%`;
+            and.push({ [Op.or]: [byColumns, { dimension: { [Op.iLike]: pattern } }] });
         }
-        if (ids) where.id = { [Op.in]: ids };
+        if (saison) and.push({ saison: { [Op.iLike]: contains(saison) } });
+        if (prixMax) and.push({ prix: { [Op.lte]: prixMax } });
+        if (prixMin) and.push({ prix: { [Op.gte]: prixMin } });
+        if (ids) and.push({ id: { [Op.in]: ids } });
+        // Modèle : chaque mot doit apparaître (« primacy 4 » -> Primacy 4, PRIMACY-4...)
+        for (const mot of words(modele)) and.push({ modele: { [Op.iLike]: contains(mot) } });
 
         const include = [{
             model: Marque,
             as: "marque",
             attributes: ["id", "nom"],
-            ...(marque ? { where: { nom: { [Op.iLike]: marque } } } : {})
+            ...(marque ? { where: { nom: { [Op.iLike]: contains(marque.trim()) } } } : {})
         }];
 
         const rows = await Pneu.findAll({
-            where, include, attributes: TIRE_ATTRS,
+            where: { [Op.and]: and }, include, attributes: TIRE_ATTRS,
             order: [["prix", "ASC"]],
             limit
         });
-        return withPromos(rows);
+        const tires = await withPromos(rows);
+        return dimKeys.length ? tires.filter((t) => dimKeys.every((k) => t[k] === Number(dim[k]))) : tires;
     },
 
     async getTiresByIds(ids) {
